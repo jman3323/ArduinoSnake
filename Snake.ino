@@ -36,10 +36,12 @@ int board[8][8] = {
 
 const int RED = -1, GREEN = 1, OFF = 0, GROUNDED = OUTPUT, OPEN = INPUT;
 
-unsigned long prevTickTime = 0, prevRefreshTime = 0;
-const unsigned long gameTick = 250; // game logic proceeds, 1/4 of a second
-const unsigned long refreshTick = 5; //rate at which it flashes to the next row
+unsigned long prevTickTime = 0, prevRefreshTime = 0, restartTime = 0;
+const unsigned long NORMALTICK = 250, HARDTICK = 175, EXPERTTICK = 117;
+unsigned long gameTick = NORMALTICK; // game logic proceeds, 1/4 of a second
+const unsigned long refreshTick = 3; //rate at which it flashes to the next row
 int curPaintRow = 0;
+int chaosTicks = 0;
 
 //**************
 //GAME LOGIC STUFF
@@ -59,6 +61,7 @@ int prevDirs[8][8] = {
   {0,0,0,0,0,0,0,0},
   {0,0,0,0,0,0,0,0}
 };
+int chaos = 0;
 int gameOver = 0;
 
 void paint()
@@ -131,7 +134,7 @@ void clearBoard()
     }
 }
 
-void setup()
+void newGame()
 {
   for (int p = 0; p < 8; ++p)
   {
@@ -149,6 +152,70 @@ void setup()
   curPaintRow = 0;
 
   clearBoard();
+  board[1][5] = board[1][6] = board[1][7] = board[2][5] = GREEN;
+  board[1][1] = board[1][2] = board[1][3] = board[2][1] = board[2][3] = GREEN;
+  int curDiff = 0;
+  board[5][6] = GREEN;
+  if (gameTick == HARDTICK)
+  {
+    board[4][6] = board[5][6] = board[6][6] = GREEN;
+    curDiff = 1;
+  }
+  else if (gameTick == EXPERTTICK)
+  {
+    board[4][6] = board[5][6] = board[6][6] = board[5][5] = RED;
+    curDiff = 2;
+  }
+  unsigned long prevDiffPressTime = 0;
+  board[5][2] = GREEN;
+  if (chaos)
+    board[4][2] = board[5][2] = board[6][2] = board[5][1] = RED;
+  unsigned long prevChaosPressTime = 0;
+  unsigned long pressWaitTime = 340;
+  while (true)
+  {
+    if (digitalRead(LEFT) == LOW && digitalRead(RIGHT) == LOW && millis() - restartTime >= pressWaitTime)
+      break;
+    if (digitalRead(UP) == LOW && millis() - prevDiffPressTime >= pressWaitTime)
+    {
+      curDiff = (curDiff + 1) % 3;
+      if (curDiff == 0)
+      {
+        board[5][6] = GREEN;
+        board[4][6] = board[6][6] = board[5][5] = OFF;
+      }
+      else if (curDiff == 1)
+      {
+        board[4][6] = board[5][6] = board[6][6] = GREEN;
+        board[5][5] = OFF;
+      }
+      else if (curDiff == 2)
+        board[4][6] = board[5][6] = board[6][6] = board[5][5] = RED;
+      prevDiffPressTime = millis();
+    }
+    if (digitalRead(DOWN) == LOW && millis() - prevChaosPressTime >= pressWaitTime)
+    {
+      chaos ^= 1;
+      if (chaos)
+        board[4][2] = board[5][2] = board[6][2] = board[5][1] = RED;
+      else
+      {
+        board[5][2] = GREEN;
+        board[4][2] = board[6][2] = board[5][1] = OFF;
+      }
+      prevChaosPressTime = millis();
+    }
+    paint();
+  }
+  if (curDiff == 0)
+    gameTick = NORMALTICK;
+  else if (curDiff == 1)
+    gameTick = HARDTICK;
+  else if (curDiff == 2)
+    gameTick = EXPERTTICK;
+  chaosTicks = 0;
+
+  clearBoard();
   head[0] = 0;
   head[1] = 0;
   dir = RIGHT;
@@ -159,6 +226,11 @@ void setup()
 
   randomSeed(analogRead(0));
   spawnApple();
+}
+
+void setup()
+{
+  newGame();
 }
 
 void spawnApple()
@@ -174,6 +246,7 @@ void spawnApple()
 
 void getMove(int dir, int* dr, int* dc)
 {
+  //NOTE that dr/dc are flipped since screen is flipped
   *dr = 0;
   *dc = 0;
   if (dir == LEFT)
@@ -184,6 +257,15 @@ void getMove(int dir, int* dr, int* dc)
     *dc = 1;
   else if (dir == DOWN)
     *dc = -1;
+}
+
+void deleteTail()
+{
+  int dtr = 0, dtc = 0;
+  getMove(prevDirs[tail[0]][tail[1]], &dtr, &dtc);
+  board[tail[0]][tail[1]] = OFF;
+  tail[0] = (tail[0]+dtr+8)%8;
+  tail[1] = (tail[1]+dtc+8)%8;
 }
 
 void updateGameState()
@@ -200,10 +282,27 @@ void updateGameState()
     else if (nextDir == DOWN && dir != UP)
       dir = nextDir;
     
-    //NOTE that dr/dc are flipped since screen is flipped
     int dr = 0, dc = 0;
     getMove(dir, &dr, &dc);
     int tr = (head[0]+dr+8)%8, tc = (head[1]+dc+8)%8;
+    int appleEaten = 0;
+    if (board[tr][tc] == RED)
+      appleEaten = 1;
+    Serial.print(head[0]);Serial.print(head[1]);Serial.print(tr);Serial.print(tc);Serial.println(appleEaten);
+    if (head[0] == tail[0] && head[1] == tail[1])
+      prevDirs[tail[0]][tail[1]] = dir;
+    if (chaos && ++chaosTicks == 2)
+    {
+      chaosTicks = 0;
+      if (!(head[0] == tail[0] && head[1] == tail[1]))
+        deleteTail();
+    }
+    if (!appleEaten && !chaos || appleEaten && chaos) //delete tail if an apple wasn't eaten
+    {
+      if (chaos && !(head[0] == tail[0] && head[1] == tail[1]))
+        deleteTail();
+      deleteTail();
+    }
     if (board[tr][tc] == GREEN)
     {
       gameOver = 1;
@@ -217,23 +316,12 @@ void updateGameState()
     else
     {
       prevDirs[head[0]][head[1]] = dir;
-      if (board[tr][tc] != RED) //delete tail if an apple wasn't eaten
-      {
-        int dtr = 0, dtc = 0;
-        getMove(prevDirs[tail[0]][tail[1]], &dtr, &dtc);
-        board[tail[0]][tail[1]] = OFF;
-        tail[0] = (tail[0]+dtr+8)%8;
-        tail[1] = (tail[1]+dtc+8)%8;
-      }
-      else
-      {
-        board[tr][tc] = GREEN;
-        spawnApple();
-      }
       board[tr][tc] = GREEN;
       head[0] = tr;
       head[1] = tc;
     }
+    if (appleEaten)
+      spawnApple();
     prevTickTime = millis();
   }
 }
@@ -259,7 +347,10 @@ void loop()
     paint();
     //Click both left and right to restart game
     if (digitalRead(LEFT) == LOW && digitalRead(RIGHT) == LOW)
-      setup();
+    {
+      restartTime = millis();
+      newGame();
+    }
     return;
   }
   if (digitalRead(LEFT) == LOW)
